@@ -8,14 +8,13 @@
 //  main.cpp
 //  NetProbe
 //
-//  Created by ¼ÎžÔÁº on 15/1/25.
-//  Copyright (c) 2015Äê ___jonathan___. All rights reserved.
+//  Created by Jonathan on 15/1/25.
+//  Copyright (c) 2015 ___jonathan___. All rights reserved.
 //
 
 /*
 TODO:
 1. Preciser Rate Control
-2. Packet Sequence Number cheaking
 */
 
 #include <iostream>
@@ -692,11 +691,13 @@ bool UDP_recv(int local_port, char* local_host, WSADATA *wsaData, int ref_interv
 			temp_num[j] = recvbuf[j];
 		long temp_check_num = atol(temp_num);
 
-		//check packet sequence
-		if (temp_check_num == seq_num)
-			seq_num++;
-		else
-			lost_pkg_num++;
+		//check packet sequence (rewrite)
+		if (temp_check_num >= seq_num)
+			seq_num = temp_check_num + 1;
+
+		lost_pkg_num = seq_num - total_pkt_num;
+
+		//---------------------------------------//
 
 		if (iResult == SOCKET_ERROR)
 		{
