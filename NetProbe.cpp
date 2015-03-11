@@ -54,13 +54,9 @@ using namespace std;
 #define DEFAULT_BUFLEN 512
 #define DEFAULT_PORT "27015"
 
-#ifdef WIN32
 std::mutex m;
 unique_lock<mutex> lck(m, defer_lock);
-#else
-std::mutex m;
-unique_lock<mutex> lck(m, defer_lock);
-#endif
+
 double disply_elapse_time = 0;
 unsigned int display_pkts = 0, display_lost_pkts = 0;
 double display_rate = 0, display_jitter = 0, display_lost_rate = 0;
@@ -97,7 +93,7 @@ bool check_arg_num(int argc, char mode)
 	else if (mode == 'h'&& argc == 3)
 		result = true;
 	else
-		printf("%s\n", warning);
+		printf("%s\n", warning.c_str());
 	return result;
 }
 
@@ -311,7 +307,7 @@ bool TCP_Send(int remote_port, char* remote_host, int ref_inter, int pkg_size, d
 				byte_send += iResult;
 			}
 
-			if (iResult == -1) {
+			if (iResult == SOCKET_ERROR) {
 				error_handling("send failed with error: ", WSAGetLastError());
 				closesocket(sock);
 #ifdef WIN32
@@ -378,6 +374,7 @@ bool TCP_Send(int remote_port, char* remote_host, int ref_inter, int pkg_size, d
 	}
 
 	// shutdown the connection since no more data will be sent
+	packet_send_not_finished = false;
 	closesocket(sock);
 #ifdef WIN32
 	WSACleanup();
@@ -504,7 +501,6 @@ bool TCP_recv(int local_port, char* local_host, int ref_interv, int pkg_size)
 
 		if (iResult == 0)
 		{
-			printf("\nConnection closing...\n");
 			break;
 		}
 		else if (iResult<0)
@@ -557,6 +553,7 @@ bool TCP_recv(int local_port, char* local_host, int ref_interv, int pkg_size)
 	packet_send_not_finished = false;
 	th.join();
 	// cleanup
+	printf("\nConnection closing...\n");
 	closesocket(client_sock);
 #ifdef WIN32
 	WSACleanup();
