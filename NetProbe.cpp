@@ -28,7 +28,6 @@ TODO:
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-#include <signal.h>
 #include <errno.h>
 #define SOCKET int
 #define SOCKET_ERROR -1
@@ -56,8 +55,8 @@ using namespace std;
 #define DEFAULT_BUFLEN 30
 #define DEFAULT_UDP_PORT 9878
 
-std::mutex m;
-unique_lock<mutex> lck(m, defer_lock);
+std::mutex lck;
+//unique_lock<mutex> lck(m, defer_lock);
 
 int tcp_client_num = 0, udp_client_num = 0;
 double aggregate_rate = 0;
@@ -761,6 +760,7 @@ bool UDP_Client(int remote_port, char* remote_host, int ref_inter, int pkg_size,
 
 bool UDP_Server_Send(sockaddr_in client_info, int pkg_size, int pkg_num, double rate)
 {
+	signal(SIGPIPE,SIG_IGN);
 	int iResult = 0;
 	lck.lock();
 
