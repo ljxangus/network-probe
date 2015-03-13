@@ -28,6 +28,7 @@ TODO:
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <signal.h>
 #include <errno.h>
 #define SOCKET int
 #define SOCKET_ERROR -1
@@ -53,37 +54,30 @@ TODO:
 using namespace std;
 
 #define DEFAULT_BUFLEN 30
-#define DEFAULT_UDP_PORT 4180
+#define DEFAULT_UDP_PORT 9878
 
 std::mutex m;
 unique_lock<mutex> lck(m, defer_lock);
 
 int tcp_client_num = 0, udp_client_num = 0;
 double aggregate_rate = 0;
+
+//vector to store all the rate and compute
+vector<double> rate_vector;
+int thread_id = 0;
+
 double disply_elapse_time = 0;
 unsigned int display_pkts = 0, display_lost_pkts = 0;
 double display_rate = 0, display_jitter = 0, display_lost_rate = 0;
 bool packet_send_not_finished = true;
 bool start_counting_time = false;
 bool last_is_127_or_m1 = false;
-string warning = "Incorrect input format.\n\nUsage: NetProbe.exe[mode:s/r/h] <parameters depending on mode>\n\n========================================================================\n's' [ref_int] [remote_host] [remote_port] [protocol] [pkt_size] [rate] [num]\n'r' [ref_int] [local_host] [local_port] [protocol] [pkt_size]\n'h' [hostname]\n========================================================================";
+string warning = "Incorrect input format.\n\nUsage: NetProbe.exe[mode:s/c] <parameters depending on mode>\n\n========================================================================\n'c' [ref_int] [server_host] [server_port] [protocol] [pkt_size] [rate] [num]\n's' [ref_int] [tcp_port] [udp_port]\n========================================================================";
 
-void error_handling(char *str, int error_num)
+void error_handling(string str, int error_num)
 {
-	printf("\n%s: %d\n", str, error_num);
+	printf("\n%s: %d\n", str.c_str(), error_num);
 	packet_send_not_finished = false;
-}
-
-bool boundary_check(int a)
-{
-	if (last_is_127_or_m1 && (a == 128 || a == 0))
-	{
-		last_is_127_or_m1 = false;
-		return true;
-	}
-	else if (a == 127 || a == -1)
-		last_is_127_or_m1 = true;
-	return false;
 }
 
 bool check_arg_num(int argc, char mode)
@@ -102,80 +96,34 @@ void display_clients_num(int refresh_interval)
 {
 	while (1)
 	{
-#ifdef WIN32
+		int display_tcp_num = 0, display_udp_num = 0;
 		lck.lock();
-#endif
+		aggregate_rate = 0;
+		for (int i = 0; i < rate_vector.size(); i++)
+			aggregate_rate += rate_vector[i];
+		display_tcp_num = tcp_client_num;
+		display_udp_num = udp_client_num;
+		lck.unlock();
 		if (aggregate_rate<1000)
-			printf("\rAggregate Rate [%.2fbps] # of TCP Clients [%d] # of UDP CLients [%d]", aggregate_rate, tcp_client_num, udp_client_num);
+			printf("\rAggregate Rate [%.2lfbps] # of TCP Clients [%d] # of UDP CLients [%d]", aggregate_rate, tcp_client_num, udp_client_num);
 		else if (aggregate_rate >= 1000 && aggregate_rate < 1000 * 1000)
-			printf("\rAggregate Rate [%.2fkbps] # of TCP Clients [%d] # of UDP CLients [%d]", aggregate_rate / 1000, tcp_client_num, udp_client_num);
+			printf("\rAggregate Rate [%.2lfkbps] # of TCP Clients [%d] # of UDP CLients [%d]", aggregate_rate / 1000, tcp_client_num, udp_client_num);
 		else if (aggregate_rate >= 1000 * 1000 && aggregate_rate < 1000 * 1000 * 1000)
-			printf("\rAggregate Rate [%.2fMbps] # of TCP Clients [%d] # of UDP CLients [%d]", aggregate_rate / 1000 / 1000, tcp_client_num, udp_client_num);
+			printf("\rAggregate Rate [%.2lfMbps] # of TCP Clients [%d] # of UDP CLients [%d]", aggregate_rate / 1000 / 1000, tcp_client_num, udp_client_num);
 		else
-			printf("\rAggregate Rate [%.2fbps] # of TCP Clients [%d] # of UDP CLients [%d]", aggregate_rate, tcp_client_num, udp_client_num);
-		cout.flush();
-#ifdef WIN32
-		lck.unlock();
-#endif
+			printf("\rAggregate Rate [%.2lfbps] # of TCP Clients [%d] # of UDP CLients [%d]", aggregate_rate, tcp_client_num, udp_client_num);
+		fflush(stdout);
 		this_thread::sleep_for(chrono::milliseconds(refresh_interval));
 	}
-}
-
-void display_send(int refresh_interval)
-{
-	ES_FlashTimer timer = ES_FlashTimer();
-	timer.Start();
-	while (packet_send_not_finished)
-	{
-		disply_elapse_time = timer.Elapsed();
-		cout.flush();
-#ifdef WIN32
-		lck.lock();
-#endif
-		if (display_rate<1000)
-			printf("\rElapsed [%.1fs] Pkts [%d] Rate [%.2fbps] Jitter [%.3fms]", disply_elapse_time / 1000, display_pkts, display_rate, display_jitter);
-		else if (display_rate >= 1000 && display_rate < 1000 * 1000)
-			printf("\rElapsed [%.1fs] Pkts [%d] Rate [%.2fkbps] Jitter [%.3fms]", disply_elapse_time / 1000, display_pkts, display_rate / 1000, display_jitter);
-		else if (display_rate >= 1000 * 1000 && display_rate < 1000 * 1000 * 1000)
-			printf("\rElapsed [%.1fs] Pkts [%d] Rate [%.2fMbps] Jitter [%.3fms]", disply_elapse_time / 1000, display_pkts, display_rate / 1000 / 1000, display_jitter);
-		else
-			printf("\rElapsed [%.1fs] Pkts [%d] Rate [%.2fbps] Jitter [%.3fms]", disply_elapse_time / 1000, display_pkts, display_rate, display_jitter);
-#ifdef WIN32
-		lck.unlock();
-#endif
-		cout.flush();
-		this_thread::sleep_for(chrono::milliseconds(refresh_interval));
-	}
-	disply_elapse_time = timer.Elapsed();
-#ifdef WIN32
-	lck.lock();
-#endif
-	if (display_rate<1000)
-		printf("\rElapsed [%.1fs] Pkts [%d] Rate [%.2fbps] Jitter [%.3fms]", disply_elapse_time / 1000, display_pkts, display_rate, display_jitter);
-	else if (display_rate >= 1000 && display_rate < 1000 * 1000)
-		printf("\rElapsed [%.1fs] Pkts [%d] Rate [%.2fkbps] Jitter [%.3fms]", disply_elapse_time / 1000, display_pkts, display_rate / 1000, display_jitter);
-	else if (display_rate >= 1000 * 1000 && display_rate < 1000 * 1000 * 1000)
-		printf("\rElapsed [%.1fs] Pkts [%d] Rate [%.2fMbps] Jitter [%.3fms]", disply_elapse_time / 1000, display_pkts, display_rate / 1000 / 1000, display_jitter);
-	else
-		printf("\rElapsed [%.1fs] Pkts [%d] Rate [%.2fbps] Jitter [%.3fms]", disply_elapse_time / 1000, display_pkts, display_rate, display_jitter);
-#ifdef WIN32
-	lck.unlock();
-#endif
-	cout.flush();
 }
 
 void display_receive(int refresh_interval)
 {
+	unsigned int pkt_num = 0, lost_pkt = 0;
+	double rate = 0, jitter = 0, lost_rate = 0;
 	while (!start_counting_time)
 	{
-		cout.flush();
-#ifdef WIN32
-		lck.lock();
-#endif
-		printf("\rElapsed [%.1fs] Pkts [%d] Lost [%d, %.2f%%] Rate [%.2fbps] Jitter [%.3fms]", disply_elapse_time / 1000, display_pkts, display_lost_pkts, display_lost_rate, display_rate, display_jitter);
-#ifdef WIN32
-		lck.unlock();
-#endif
+		printf("\rElapsed [%.1fs] Pkts [%u] Lost [%u, %.2lf%%] Rate [%.2lfbps] Jitter [%.3lfms]", disply_elapse_time / 1000, pkt_num, lost_pkt, lost_rate, rate, jitter);
 		this_thread::sleep_for(chrono::milliseconds(refresh_interval));
 	}
 
@@ -183,41 +131,36 @@ void display_receive(int refresh_interval)
 	timer.Start();
 	while (packet_send_not_finished)
 	{
-		cout.flush();
-#ifdef WIN32
 		lck.lock();
-#endif
+		pkt_num = display_pkts; lost_pkt = display_lost_pkts;
+		rate = display_rate; jitter = display_jitter; lost_rate = display_lost_rate;
 		disply_elapse_time = timer.Elapsed();
-		if (display_rate<1000)
-			printf("\rElapsed [%.1fs] Pkts [%d] Lost [%d, %.2f%%] Rate [%.2fbps] Jitter [%.3fms]", disply_elapse_time / 1000, display_pkts, display_lost_pkts, display_lost_rate, display_rate, display_jitter);
-		else if (display_rate >= 1000 && display_rate < 1000 * 1000)
-			printf("\rElapsed [%.1fs] Pkts [%d] Lost [%d, %.2f%%] Rate [%.2fkbps] Jitter [%.3fms]", disply_elapse_time / 1000, display_pkts, display_lost_pkts, display_lost_rate, display_rate / 1000, display_jitter);
-		else if (display_rate >= 1000 * 1000 && display_rate < 1000 * 1000 * 1000)
-			printf("\rElapsed [%.1fs] Pkts [%d] Lost [%d, %.2f%%] Rate [%.2fMbps] Jitter [%.3fms]", disply_elapse_time / 1000, display_pkts, display_lost_pkts, display_lost_rate, display_rate / 1000 / 1000, display_jitter);
-		else
-			printf("\rElapsed [%.1fs] Pkts [%d] Lost [%d, %.2f%%] Rate [%.2fbps] Jitter [%.3fms]", disply_elapse_time / 1000, display_pkts, display_lost_pkts, display_lost_rate, display_rate, display_jitter);
-#ifdef WIN32
 		lck.unlock();
-#endif
-		cout.flush();
+		if (rate<1000)
+			printf("\rElapsed [%.1fs] Pkts [%u] Lost [%u, %.2lf%%] Rate [%.2lfbps] Jitter [%.3lfms]", disply_elapse_time / 1000, pkt_num, lost_pkt, lost_rate, rate, jitter);
+		else if (rate >= 1000 && rate < 1000 * 1000)
+			printf("\rElapsed [%.1fs] Pkts [%u] Lost [%u, %.2lf%%] Rate [%.2lfkbps] Jitter [%.3lfms]", disply_elapse_time / 1000, pkt_num, lost_pkt, lost_rate, rate / 1000, jitter);
+		else if (rate >= 1000 * 1000 && rate < 1000 * 1000 * 1000)
+			printf("\rElapsed [%.1fs] Pkts [%u] Lost [%u, %.2lf%%] Rate [%.2lfMbps] Jitter [%.3lfms]", disply_elapse_time / 1000, pkt_num, lost_pkt, lost_rate, rate / 1000 / 1000, jitter);
+		else
+			printf("\rElapsed [%.1fs] Pkts [%u] Lost [%u, %.2lf%%] Rate [%.2lfbps] Jitter [%.3lfms]", disply_elapse_time / 1000, pkt_num, lost_pkt, lost_rate, rate, jitter);
+		fflush(stdout);
 		this_thread::sleep_for(chrono::milliseconds(refresh_interval));
 	}
-#ifdef WIN32
 	lck.lock();
-#endif
+	pkt_num = display_pkts; lost_pkt = display_lost_pkts;
+	rate = display_rate; jitter = display_jitter; lost_rate = display_lost_rate;
 	disply_elapse_time = timer.Elapsed();
-	if (display_rate<1000)
-		printf("\rElapsed [%.1fs] Pkts [%d] Lost [%d, %.2f%%] Rate [%.2fbps] Jitter [%.3fms]", disply_elapse_time / 1000, display_pkts, display_lost_pkts, display_lost_rate, display_rate, display_jitter);
-	else if (display_rate >= 1000 && display_rate < 1000 * 1000)
-		printf("\rElapsed [%.1fs] Pkts [%d] Lost [%d, %.2f%%] Rate [%.2fkbps] Jitter [%.3fms]", disply_elapse_time / 1000, display_pkts, display_lost_pkts, display_lost_rate, display_rate / 1000, display_jitter);
-	else if (display_rate >= 1000 * 1000 && display_rate < 1000 * 1000 * 1000)
-		printf("\rElapsed [%.1fs] Pkts [%d] Lost [%d, %.2f%%] Rate [%.2fMbps] Jitter [%.3fms]", disply_elapse_time / 1000, display_pkts, display_lost_pkts, display_lost_rate, display_rate / 1000 / 1000, display_jitter);
-	else
-		printf("\rElapsed [%.1fs] Pkts [%d] Lost [%d, %.2f%%] Rate [%.2fbps] Jitter [%.3fms]", disply_elapse_time / 1000, display_pkts, display_lost_pkts, display_lost_rate, display_rate, display_jitter);
-#ifdef WIN32
 	lck.unlock();
-#endif
-	cout.flush();
+	if (rate<1000)
+		printf("\rElapsed [%.1fs] Pkts [%u] Lost [%u, %.2lf%%] Rate [%.2lfbps] Jitter [%.3lfms]", disply_elapse_time / 1000, pkt_num, lost_pkt, lost_rate, rate, jitter);
+	else if (rate >= 1000 && rate < 1000 * 1000)
+		printf("\rElapsed [%.1fs] Pkts [%u] Lost [%u, %.2lf%%] Rate [%.2lfkbps] Jitter [%.3lfms]", disply_elapse_time / 1000, pkt_num, lost_pkt, lost_rate, rate / 1000, jitter);
+	else if (rate >= 1000 * 1000 && rate < 1000 * 1000 * 1000)
+		printf("\rElapsed [%.1fs] Pkts [%u] Lost [%u, %.2lf%%] Rate [%.2lfMbps] Jitter [%.3lfms]", disply_elapse_time / 1000, pkt_num, lost_pkt, lost_rate, rate / 1000 / 1000, jitter);
+	else
+		printf("\rElapsed [%.1fs] Pkts [%u] Lost [%u, %.2lf%%] Rate [%.2lfbps] Jitter [%.3lfms]", disply_elapse_time / 1000, pkt_num, lost_pkt, lost_rate, rate, jitter);
+	fflush(stdout);
 
 }
 
@@ -313,8 +256,8 @@ bool TCP_Client(int remote_port, char* remote_host, int ref_inter, int pkg_size,
 	//
 	//
 	//------------Enetering the receiver mode--------------------------------//
-	
-	
+
+
 	//create Timer
 	ES_FlashTimer timer = ES_FlashTimer();
 
@@ -415,10 +358,14 @@ bool TCP_Client(int remote_port, char* remote_host, int ref_inter, int pkg_size,
 	return true;
 }
 
-bool TCP_Server_Send(SOCKET &sender_sock)
+bool TCP_Server_Send(SOCKET sender_sock)
 {
+	signal(SIGPIPE,SIG_IGN);
 	int iResult = 0;
 	lck.lock();
+	int my_thread_id = thread_id++;
+	//add a rate num in the vector
+	rate_vector.push_back(0);
 	tcp_client_num++;
 	lck.unlock();
 
@@ -440,6 +387,7 @@ bool TCP_Server_Send(SOCKET &sender_sock)
 	pkg_size = atoi(temp_pkg_size);
 	pkg_num = atoi(temp_pkg_num);
 	rate = atoi(temp_rate);
+	//printf("Packet size:%d, pkg_num:%d, rate:%d\n", pkg_size, pkg_num, rate);
 
 	//-------------Entering sender mode and send data--------------------//
 
@@ -477,7 +425,7 @@ bool TCP_Server_Send(SOCKET &sender_sock)
 #ifdef WIN32
 		_itoa_s(seq_num, temp_num, 10);
 #else
-		sprintf(temp_num, "%d", seq_num);
+		sprintf(temp_num, "%ld", seq_num);
 #endif
 		for (int j = 0; j < 8; j++)
 			sendbuf[j] = temp_num[j];
@@ -499,6 +447,7 @@ bool TCP_Server_Send(SOCKET &sender_sock)
 			if (iResult == SOCKET_ERROR) {
 				error_handling("send failed with error: ", WSAGetLastError());
 				lck.lock();
+				rate_vector[my_thread_id] = 0;
 				tcp_client_num--;
 				lck.unlock();
 				closesocket(sender_sock);
@@ -545,11 +494,13 @@ bool TCP_Server_Send(SOCKET &sender_sock)
 
 		//update the display attributes
 		lck.lock();
-		aggregate_rate += current_rate;
+		rate_vector[my_thread_id] = current_rate;
 		lck.unlock();
 	}
 	closesocket(sender_sock);
 	lck.lock();
+	//assign the rate of this thread as 0
+	rate_vector[my_thread_id] = 0;
 	tcp_client_num--;
 	lck.unlock();
 	return true;
@@ -583,7 +534,7 @@ bool TCP_Server_Handling(int tcp_port)
 #ifdef WIN32
 	iResult = ::bind(listen_sock, (LPSOCKADDR)&TCP_receiver_addr, sizeof(TCP_receiver_addr));
 #else
-	iResult = bind(listen_sock, (SOCKADDR *)&TCP_receiver_addr, sizeof(TCP_receiver_addr));
+	iResult = ::bind(listen_sock, (SOCKADDR *)&TCP_receiver_addr, sizeof(TCP_receiver_addr));
 #endif
 	if (iResult == SOCKET_ERROR)
 	{
@@ -610,7 +561,7 @@ bool TCP_Server_Handling(int tcp_port)
 
 	//thread vector
 	//vector<std::thread> thread_vector;
-	
+
 	while (1)
 	{
 		SOCKET sender_sock; //connect to client
@@ -626,7 +577,7 @@ bool TCP_Server_Handling(int tcp_port)
 		else
 			printf("\nAccept the connection successfully\n");
 
-		std::thread (TCP_Server_Send, sender_sock).detach();
+		std::thread(TCP_Server_Send, sender_sock).detach();
 	}
 
 	//Don't need the listening socket
@@ -684,13 +635,13 @@ bool UDP_Client(int remote_port, char* remote_host, int ref_inter, int pkg_size,
 	}
 
 	//binding socket
-	iResult = ::bind(sock, (sockaddr *)&UDP_Reiceiver_addr, sizeof(UDP_Reiceiver_addr));
+	/*iResult = ::bind(sock, (sockaddr *)&UDP_Reiceiver_addr, sizeof(UDP_Reiceiver_addr));
 	if (iResult == SOCKET_ERROR)
 	{
 		error_handling("Unable to bind with error: ", WSAGetLastError());
 		closesocket(sock);
 		return false;
-	}
+	}*/
 
 	//send the request packet with metadata: Protocol[0-2], packet size[3-8], rate[9-16], num[17-24]
 	char metadata[30], temp[10], temp2[10], temp3[10];
@@ -710,10 +661,10 @@ bool UDP_Client(int remote_port, char* remote_host, int ref_inter, int pkg_size,
 
 	//send the request
 	iResult = sendto(sock, metadata, 30, 0, (sockaddr*)&UDP_Server_addr, sizeof(UDP_Server_addr));
-	printf("\npacket request send to %s:%d!\n", remote_host,remote_port);
-	
+	//printf("\npacket request send to %s:%d!\n", remote_host, remote_port);
+
 	//------------------------------Receiving Part---------------------------//
-	
+
 	// buffer
 	char *recvbuf = (char*)malloc(pkg_size);
 	int recvbuflen = pkg_size;
@@ -808,11 +759,15 @@ bool UDP_Client(int remote_port, char* remote_host, int ref_inter, int pkg_size,
 	return true;
 }
 
-bool UDP_Server_Send(sockaddr_in client_info, int pkg_size,int pkg_num,int rate)
+bool UDP_Server_Send(sockaddr_in client_info, int pkg_size, int pkg_num, double rate)
 {
 	int iResult = 0;
 	lck.lock();
+
+	int my_thread_id = thread_id++;
+	rate_vector.push_back(0);
 	udp_client_num++;
+
 	lck.unlock();
 
 	SOCKET send_sock = INVALID_SOCKET;
@@ -829,6 +784,7 @@ bool UDP_Server_Send(sockaddr_in client_info, int pkg_size,int pkg_num,int rate)
 	long total_sent_bytes = 0;
 	double current_rate = 0, duration = 0, last_dur = 0;
 	long old_jit_time = 0, starting_time = 0;
+	double jitter_old = 0, jitter_new = 0;
 
 	sockaddr_in UDP_Reiceiver_addr;
 	UDP_Reiceiver_addr.sin_family = AF_INET;
@@ -862,7 +818,7 @@ bool UDP_Server_Send(sockaddr_in client_info, int pkg_size,int pkg_num,int rate)
 #ifdef WIN32
 		_itoa_s(seq_num, temp_num, 10);
 #else
-		sprintf(temp_num, "%d", seq_num);
+		sprintf(temp_num, "%ld", seq_num);
 #endif
 		for (int j = 0; j < 8; j++)
 			sendbuf[j] = temp_num[j];
@@ -874,6 +830,7 @@ bool UDP_Server_Send(sockaddr_in client_info, int pkg_size,int pkg_num,int rate)
 		{
 			error_handling("sendto() failed with error: ", WSAGetLastError());
 			lck.lock();
+			rate_vector[my_thread_id] = 0;
 			tcp_client_num--;
 			lck.unlock();
 			closesocket(send_sock);
@@ -913,13 +870,14 @@ bool UDP_Server_Send(sockaddr_in client_info, int pkg_size,int pkg_num,int rate)
 
 		//update the display attributes
 		lck.lock();
-		aggregate_rate += current_rate;
+		rate_vector[my_thread_id] = current_rate;
 		lck.unlock();
 
 	}
 
 	//update the display attributes
 	lck.lock();
+	rate_vector[my_thread_id] = 0;
 	udp_client_num--;
 	lck.unlock();
 
@@ -1045,12 +1003,12 @@ int main(int argc, char *argv[])
 	string mode = "", protocol = "", hostname = "";
 	char* remote_host;
 	int refresh_interval = 10, remote_port = 2000, packet_size = 0, num = 0, local_port = 2000;
-	int tcp_port = 0,udp_port = 0;
+	int tcp_port = 0, udp_port = 0;
 	double rate = 0;
 
 	if (argc <= 2)
 	{
-		printf("%s\n", "Incorrect input format.\n\nUsage: NetProbe.exe[mode:s/r/h] <parameters depending on mode>\n\n========================================================================\n's' [ref_int] [remote_host] [remote_port] [protocol] [pkt_size] [rate] [num]\n'r' [ref_int] [local_host] [local_port] [protocol] [pkt_size]\n'h' [hostname]\n========================================================================");
+		printf("%s\n", warning.c_str());
 		printf("\n");
 		exit(0);
 	}
@@ -1101,7 +1059,6 @@ int main(int argc, char *argv[])
 	{
 		printf("No such mode\n");
 	}
-	system("Pause");
 	return 0;
 }
 
