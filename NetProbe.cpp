@@ -22,6 +22,7 @@ TODO:
 #pragma comment(lib,"ws2_32.lib")
 #else // Assume Linux
 #include <sys/types.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <sys/fcntl.h>
@@ -359,7 +360,9 @@ bool TCP_Client(int remote_port, char* remote_host, int ref_inter, int pkg_size,
 
 bool TCP_Server_Send(SOCKET sender_sock)
 {
+#ifndef WIN32
 	signal(SIGPIPE,SIG_IGN);
+#endif
 	int iResult = 0;
 	lck.lock();
 	int my_thread_id = thread_id++;
@@ -760,7 +763,9 @@ bool UDP_Client(int remote_port, char* remote_host, int ref_inter, int pkg_size,
 
 bool UDP_Server_Send(sockaddr_in client_info, int pkg_size, int pkg_num, double rate)
 {
+#ifndef WIN32
 	signal(SIGPIPE,SIG_IGN);
+#endif
 	int iResult = 0;
 	lck.lock();
 

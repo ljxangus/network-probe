@@ -1,5 +1,16 @@
-## CONSOLE APPLICATION : NetProbe Project Overview
+# NetProbe 
+###-- Console app to test your Network
 
+How to install?
+
+* **In Linux**
+Directly make and use command `NetProbe` to see the Usage
+* **In Windows**
+Please be patinet to wait for the `.exe` come out
+
+-----
+
+### Overview
 
 AppWizard has created this NetProbe application for you.
 
@@ -26,7 +37,7 @@ make up your NetProbe application.
     
     This is the main application source file.
 
----
+
 Other standard files:
 
 * StdAfx.h, StdAfx.cpp
@@ -34,11 +45,11 @@ Other standard files:
     These files are used to build a precompiled header (PCH) file
     named NetProbe.pch and a precompiled types file named StdAfx.obj.
 
-
----
 Other notes:
 
 AppWizard uses "TODO:" comments to indicate parts of the source code you
 should add to or customize.
 
 ---
+
+`All right reserved by Jonathan`
