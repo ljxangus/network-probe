@@ -1022,7 +1022,7 @@ int main(int argc, char *argv[])
 
 	int iResult = 0;
 
-	if (mode == "c")
+	if (strcmp(mode.c_str(),"c")==0)
 	{
 		//argument initialization
 		printf("Client Mode\n");
@@ -1039,13 +1039,13 @@ int main(int argc, char *argv[])
 		packet_size = atoi(argv[6]);
 		rate = atof(argv[7]);
 		num = atoi(argv[8]);
-		if (protocol == "TCP")
+		if (strcmp(protocol.c_str(),"TCP")==0)
 			TCP_Client(remote_port, remote_host, refresh_interval, packet_size, rate, num);
-		else if (protocol == "UDP")
+		else if (strcmp(protocol.c_str(),"UDP")==0)
 			UDP_Client(remote_port, remote_host, refresh_interval, packet_size, rate, num);
 
 	}
-	else if (mode == "s")
+	else if (strcmp(mode.c_str(),"s")==0)
 	{
 		printf("Server Mode\n");
 		if (!check_arg_num(argc, 's')){
