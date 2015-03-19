@@ -12,10 +12,6 @@
 //  Copyright (c) 2015 ___jonathan___. All rights reserved.
 //
 
-/*
-TODO:
-1. Precise Rate Control
-*/
 #ifdef WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -43,27 +39,36 @@ TODO:
 #endif
 
 #include <iostream>
+#include <queue>
+#include <fstream>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
 #include <chrono>
 #include <vector>
 #include "es_TIMER.H"
 using namespace std;
 
-#define DEFAULT_BUFLEN 30
+#define DEFAULT_BUFLEN 65536
 #define DEFAULT_UDP_PORT 9878
 
 std::mutex lck;
-//unique_lock<mutex> lck(m, defer_lock);
+queue<SOCKET> socket_queue;
+vector<std::thread> thread_array;
+std::condition_variable cv;
 
-int tcp_client_num = 0, udp_client_num = 0;
-double aggregate_rate = 0;
+struct preload_pointer
+{
+	char *index_point;
+	char *error_point;
+	char *readme_point;
+};
 
-//vector to store all the rate and compute
-vector<double> rate_vector;
+preload_pointer pointers;
+
 int thread_id = 0;
 
 double disply_elapse_time = 0;
@@ -72,7 +77,10 @@ double display_rate = 0, display_jitter = 0, display_lost_rate = 0;
 bool packet_send_not_finished = true;
 bool start_counting_time = false;
 bool last_is_127_or_m1 = false;
-string warning = "Incorrect input format.\n\nUsage: NetProbe.exe[mode:s/c] <parameters depending on mode>\n\n========================================================================\n'c' [ref_int] [server_host] [server_port] [protocol] [pkt_size] [rate] [num]\n's' [ref_int] [tcp_port] [udp_port]\n========================================================================";
+//preloaded pages
+enum preloaded {index_page,error_page,readme_page,none};
+
+string warning = "Incorrect input format.\n\nUsage: NetProbe.exe[mode:s/c] <parameters depending on mode>\n\n========================================================================\n'c' [ref_int] [server_host] [server_port] [protocol] [pkt_size] [rate] [num]\n's' [port] [server_mode:o/p] [optional:thread number]\n========================================================================";
 
 void error_handling(string str, int error_num)
 {
@@ -85,36 +93,26 @@ bool check_arg_num(int argc, char mode)
 	bool result = false;
 	if (mode == 'c' && argc == 9)
 		result = true;
-	else if (mode == 's'&& argc == 5)
+	else if (mode == 's'&& (argc == 4 || argc == 5))
+		result = true;
+	else if (mode == 'o' && argc == 4)
+		result = true;
+	else if (mode == 'p' && argc == 5)
 		result = true;
 	else
 		printf("%s\n", warning.c_str());
 	return result;
 }
 
-void display_clients_num(int refresh_interval)
+// Get the size of a file
+long getFileSize(FILE *file)
 {
-	while (1)
-	{
-		int display_tcp_num = 0, display_udp_num = 0;
-		lck.lock();
-		aggregate_rate = 0;
-		for (int i = 0; i < rate_vector.size(); i++)
-			aggregate_rate += rate_vector[i];
-		display_tcp_num = tcp_client_num;
-		display_udp_num = udp_client_num;
-		lck.unlock();
-		if (aggregate_rate<1000)
-			printf("\rAggregate Rate [%.2lfbps] # of TCP Clients [%d] # of UDP CLients [%d]", aggregate_rate, tcp_client_num, udp_client_num);
-		else if (aggregate_rate >= 1000 && aggregate_rate < 1000 * 1000)
-			printf("\rAggregate Rate [%.2lfkbps] # of TCP Clients [%d] # of UDP CLients [%d]", aggregate_rate / 1000, tcp_client_num, udp_client_num);
-		else if (aggregate_rate >= 1000 * 1000 && aggregate_rate < 1000 * 1000 * 1000)
-			printf("\rAggregate Rate [%.2lfMbps] # of TCP Clients [%d] # of UDP CLients [%d]", aggregate_rate / 1000 / 1000, tcp_client_num, udp_client_num);
-		else
-			printf("\rAggregate Rate [%.2lfbps] # of TCP Clients [%d] # of UDP CLients [%d]", aggregate_rate, tcp_client_num, udp_client_num);
-		fflush(stdout);
-		this_thread::sleep_for(chrono::milliseconds(refresh_interval));
-	}
+	long lCurPos, lEndPos;
+	lCurPos = ftell(file);
+	fseek(file, 0, 2);
+	lEndPos = ftell(file);
+	fseek(file, lCurPos, 0);
+	return lEndPos;
 }
 
 void display_receive(int refresh_interval)
@@ -358,243 +356,6 @@ bool TCP_Client(int remote_port, char* remote_host, int ref_inter, int pkg_size,
 	return true;
 }
 
-bool TCP_Server_Send(SOCKET sender_sock)
-{
-#ifndef WIN32
-	signal(SIGPIPE,SIG_IGN);
-#endif
-	int iResult = 0;
-	lck.lock();
-	int my_thread_id = thread_id++;
-	//add a rate num in the vector
-	rate_vector.push_back(0);
-	tcp_client_num++;
-	lck.unlock();
-
-	//-------------Receiving the request data and configure first---------//
-	printf("\nReceiving the metadata\n");
-	char *temp_recv_buf = (char*)malloc(30);
-	memset(temp_recv_buf, 0, 30);
-	iResult = recv(sender_sock, temp_recv_buf, 30, 0);
-
-	char metadata[30], temp_pkg_size[10], temp_pkg_num[10], temp_rate[10];
-	memcpy(metadata, temp_recv_buf, 30);
-	for (int i = 0; i < 10; i++)
-	{
-		temp_pkg_size[i] = metadata[i];
-		temp_pkg_num[i] = metadata[10 + i];
-		temp_rate[i] = metadata[20 + i];
-	}
-	int pkg_size, pkg_num, rate;
-	pkg_size = atoi(temp_pkg_size);
-	pkg_num = atoi(temp_pkg_num);
-	rate = atoi(temp_rate);
-	//printf("Packet size:%d, pkg_num:%d, rate:%d\n", pkg_size, pkg_num, rate);
-
-	//-------------Entering sender mode and send data--------------------//
-
-	//create Timer
-	ES_FlashTimer timer = ES_FlashTimer();
-	long total_sent_bytes = 0, last_total_bytes = 0;
-	double current_rate = 0, duration = 0, last_dur = 0;
-	long old_jit_time = 0, starting_time = 0;
-	double jitter_old = 0, jitter_new = 0;
-
-	// buffer
-	char *sendbuf = (char*)malloc(pkg_size);
-	int sendbuflen = pkg_size;
-	memset(sendbuf, 0, sendbuflen);
-	int i = 1;
-	//memcpy(sendbuf, &i, sendbuflen);
-	bool infinite_pkg = false;
-	long seq_num = 1;
-
-	if (pkg_num == 0)
-		infinite_pkg = true;
-
-	double gap = (pkg_size*1.0 / rate) * 1000; //in ms unit
-
-	timer.Start();
-	starting_time = timer.Elapsed();
-	old_jit_time = starting_time;
-
-	int temp_iResult = 0;
-
-	while (pkg_num > 0 || infinite_pkg)
-	{
-		//add sequence number
-		char temp_num[8];
-#ifdef WIN32
-		_itoa_s(seq_num, temp_num, 10);
-#else
-		sprintf(temp_num, "%ld", seq_num);
-#endif
-		for (int j = 0; j < 8; j++)
-			sendbuf[j] = temp_num[j];
-
-		//TCP boundary maintain
-		int byte_send = 0;
-		while (byte_send < sendbuflen)
-		{
-			//iResult = send(sock, sendbuf, sendbuflen, 0);
-			iResult = send(sender_sock, sendbuf + byte_send, sendbuflen - byte_send, 0);
-			last_dur = timer.Elapsed();
-			if (iResult > 0)
-			{
-				total_sent_bytes += iResult;
-				temp_iResult += iResult;
-				byte_send += iResult;
-			}
-
-			if (iResult == SOCKET_ERROR) {
-				error_handling("send failed with error: ", WSAGetLastError());
-				lck.lock();
-				rate_vector[my_thread_id] = 0;
-				tcp_client_num--;
-				lck.unlock();
-				closesocket(sender_sock);
-				return false;
-			}
-		}
-
-		if (--pkg_num == 0)
-			break;
-		seq_num++;
-
-		//rate controlling from second packet
-		if (rate > 0 && seq_num > 1)
-		{
-			//check current rate
-			duration = timer.Elapsed();
-			current_rate = total_sent_bytes*1.0 / (duration / 1000);
-
-			//rate control
-			if (gap*seq_num - last_dur > 0)
-				Sleep(gap*seq_num - last_dur);
-			else
-				Sleep(gap);
-		}
-		else if (rate == 0 && seq_num > 1)
-		{
-			//check current rate
-			duration = timer.Elapsed();
-			current_rate = total_sent_bytes*1.0 / (duration / 1000);
-		}
-		else if (seq_num == 1)
-		{
-			duration = timer.Elapsed();
-			current_rate = pkg_size / 1;
-			if (gap - duration > 0)
-				Sleep(gap - duration);
-			else
-				Sleep(10);
-
-		}
-
-		last_total_bytes += temp_iResult;
-		temp_iResult = 0;
-
-		//update the display attributes
-		lck.lock();
-		rate_vector[my_thread_id] = current_rate;
-		lck.unlock();
-	}
-	closesocket(sender_sock);
-	lck.lock();
-	//assign the rate of this thread as 0
-	rate_vector[my_thread_id] = 0;
-	tcp_client_num--;
-	lck.unlock();
-	return true;
-}
-
-bool TCP_Server_Handling(int tcp_port)
-{
-	int iResult = 0;
-	struct sockaddr_in client;
-	socklen_t socksize = sizeof(struct sockaddr_in);
-
-	//create socket
-	SOCKET listen_sock; //receiving request
-
-	sockaddr_in TCP_receiver_addr;
-	TCP_receiver_addr.sin_family = AF_INET;
-	TCP_receiver_addr.sin_port = htons(tcp_port);
-	TCP_receiver_addr.sin_addr.s_addr = INADDR_ANY;
-
-	listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (listen_sock == INVALID_SOCKET)
-	{
-		error_handling("\nSOCKET create error: ", WSAGetLastError());
-#ifdef WIN32
-		WSACleanup();
-#endif
-		return false;
-	}
-
-	//binding the socket
-#ifdef WIN32
-	iResult = ::bind(listen_sock, (LPSOCKADDR)&TCP_receiver_addr, sizeof(TCP_receiver_addr));
-#else
-	iResult = ::bind(listen_sock, (SOCKADDR *)&TCP_receiver_addr, sizeof(TCP_receiver_addr));
-#endif
-	if (iResult == SOCKET_ERROR)
-	{
-		error_handling("\nUnable to bind with error: ", WSAGetLastError());
-		closesocket(listen_sock);
-#ifdef WIN32
-		WSACleanup();
-#endif
-		return false;
-	}
-	else
-		printf("\nBinding successfully\n");
-
-	//listen to the socket
-	iResult = listen(listen_sock, SOMAXCONN);
-	if (iResult == SOCKET_ERROR) {
-		error_handling("\nlisten failed with error: ", WSAGetLastError());
-		closesocket(listen_sock);
-#ifdef WIN32
-		WSACleanup();
-#endif
-		return false;
-	}
-
-	//thread vector
-	//vector<std::thread> thread_vector;
-
-	while (1)
-	{
-		SOCKET sender_sock; //connect to client
-		sender_sock = accept(listen_sock, (struct sockaddr *)&client, &socksize);
-		if (sender_sock == INVALID_SOCKET){
-			error_handling("\nAccept failed with error: ", WSAGetLastError());
-			closesocket(listen_sock);
-#ifdef WIN32
-			WSACleanup();
-#endif
-			break;
-		}
-		else
-			printf("\nAccept the connection successfully\n");
-
-		std::thread(TCP_Server_Send, sender_sock).detach();
-	}
-
-	//Don't need the listening socket
-	closesocket(listen_sock);
-
-	// shutdown the connection since no more data will be sent
-	packet_send_not_finished = false;
-#ifdef WIN32
-	WSACleanup();
-#endif
-	printf("\nConnetion closing...\n");
-	return true;
-
-}
-
 bool UDP_Client(int remote_port, char* remote_host, int ref_inter, int pkg_size, double req_rate, int req_pkg_num)
 {
 	//--------------------------Requesting part----------------------//
@@ -635,15 +396,6 @@ bool UDP_Client(int remote_port, char* remote_host, int ref_inter, int pkg_size,
 #endif
 		return false;
 	}
-
-	//binding socket
-	/*iResult = ::bind(sock, (sockaddr *)&UDP_Reiceiver_addr, sizeof(UDP_Reiceiver_addr));
-	if (iResult == SOCKET_ERROR)
-	{
-		error_handling("Unable to bind with error: ", WSAGetLastError());
-		closesocket(sock);
-		return false;
-	}*/
 
 	//send the request packet with metadata: Protocol[0-2], packet size[3-8], rate[9-16], num[17-24]
 	char metadata[30], temp[10], temp2[10], temp3[10];
@@ -761,214 +513,595 @@ bool UDP_Client(int remote_port, char* remote_host, int ref_inter, int pkg_size,
 	return true;
 }
 
-bool UDP_Server_Send(sockaddr_in client_info, int pkg_size, int pkg_num, double rate)
+bool http_client_handling(SOCKET sender_sock)
 {
 #ifndef WIN32
 	signal(SIGPIPE,SIG_IGN);
 #endif
 	int iResult = 0;
-	lck.lock();
 
-	int my_thread_id = thread_id++;
-	rate_vector.push_back(0);
-	udp_client_num++;
+	//-------------Receiving the http request and parse it---------//
+	//printf("\nReceiving the metadata\n");
+	char *temp_recv_buf = (char*)malloc(DEFAULT_BUFLEN);
+	memset(temp_recv_buf, 0, DEFAULT_BUFLEN);
+	iResult = recv(sender_sock, temp_recv_buf, DEFAULT_BUFLEN, 0);
+	
+	//printf("%s\n",temp_recv_buf);
+	
+	string token_array[2];
+	int tem_num = 0;
+	char *token = strtok(temp_recv_buf, " ");
+	while (token != NULL && tem_num<2) {
+		token_array[tem_num] = token;
+        token = strtok(NULL, " ");
+		tem_num++;
+    }
+	/*
+	the first token is GET (use for checking)
+	the second token is the file name('/' stands for index.htm)	
+	*/
 
-	lck.unlock();
+	//-------------Creating response data--------------------------------//
 
-	SOCKET send_sock = INVALID_SOCKET;
+	//create file locator
+	string file_name = token_array[1];
+	string status_code = "200 OK";
+	bool file_not_found = false;
+	if (strcmp(file_name.c_str(),"/")==0)
+		file_name = "index.htm";
+	else if (file_name[0]=='/')
+		file_name.erase(0, 1);
 
-	// buffer
-	//char sendbuf[DEFAULT_BUFLEN];
-	char *sendbuf = (char*)malloc(pkg_size);
-	int sendbuflen = pkg_size;
-	memset(sendbuf, 0, sendbuflen);
+	FILE *file = NULL;
+	char *buffer;
 
-	bool infinite_pkg = false;
-	long seq_num = 1;
-	ES_FlashTimer timer = ES_FlashTimer();
-	long total_sent_bytes = 0;
-	double current_rate = 0, duration = 0, last_dur = 0;
-	long old_jit_time = 0, starting_time = 0;
-	double jitter_old = 0, jitter_new = 0;
+	//cout << "Page Name is " << file_name.c_str() << endl;
 
-	sockaddr_in UDP_Reiceiver_addr;
-	UDP_Reiceiver_addr.sin_family = AF_INET;
-	UDP_Reiceiver_addr.sin_port = client_info.sin_port;
-	UDP_Reiceiver_addr.sin_addr.s_addr = client_info.sin_addr.s_addr;
-
-	send_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	if (send_sock == SOCKET_ERROR)
+	//Open file
+	file = fopen(file_name.c_str(), "rb");
+	if (!file)
 	{
-		error_handling("SOCKET create error: ", WSAGetLastError());
-		closesocket(send_sock);
-		lck.lock();
-		udp_client_num--;
-		lck.unlock();
+		fputs("File not found\n", stderr);
+
+		//file not found handling
+		file_name = "error.htm";
+		status_code = "404 Not Found";
+		file_not_found = true;
+	}
+
+	if (file_not_found)
+	{
+		file = fopen(file_name.c_str(), "rb");
+	}
+
+	//Get file length
+	long fileSize = getFileSize(file);
+
+	//Allocate memory
+	buffer = (char*)malloc(sizeof(char)*fileSize);
+	if (!buffer)
+	{
+		fprintf(stderr, "Memory error!\n");
+		fclose(file);
 		return false;
 	}
-
-	if (pkg_num == 0)
-		infinite_pkg = true;
-
-	double gap = (pkg_size *1.0 / rate) * 1000; //in ms unit
-
-	timer.Start();
-	start_counting_time = true;
-	starting_time = timer.Elapsed();
-	old_jit_time = starting_time;
-	while (pkg_num>0 || infinite_pkg)
+	//Read file contents into buffer
+	int temp_result = fread(buffer, 1, fileSize, file);
+	if (temp_result != fileSize)
 	{
-		//add sequnce_number
-		char temp_num[8];
-#ifdef WIN32
-		_itoa_s(seq_num, temp_num, 10);
-#else
-		sprintf(temp_num, "%ld", seq_num);
-#endif
-		for (int j = 0; j < 8; j++)
-			sendbuf[j] = temp_num[j];
+		fputs("Reading error\n", stderr);
+		fclose(file);
+		return false;
+	}
+	fclose(file);
 
-		iResult = sendto(send_sock, sendbuf, sendbuflen, 0, (sockaddr*)&UDP_Reiceiver_addr, sizeof(UDP_Reiceiver_addr));
-		//printf("Packet Send to %s:%d", inet_ntoa(UDP_Reiceiver_addr.sin_addr), ntohs(UDP_Reiceiver_addr.sin_port));
-		last_dur = timer.Elapsed();
-		if (iResult == SOCKET_ERROR)
+	char header[10240];
+
+	sprintf(header, "HTTP/1.1 %s\n"
+		"Date: Thu, 19 Feb 2015 12:27:04 GMT\n"
+		"Connection: close\n"
+		"Server: Apache/2.2.3\n"
+		"Accept-Ranges: bytes\n"
+		"Content-Type: text/html\n"
+		"Content-Length: %i\n"	
+        "\n", status_code.c_str(), fileSize);
+	long header_len = strlen(header);
+
+	char *reply = (char *)malloc(header_len + fileSize);
+	memset(reply, 0, header_len + fileSize);
+	memcpy(reply, header,header_len);
+	memcpy(reply + header_len, buffer, fileSize);
+
+	//-------------Entering sender mode and send data--------------------//
+
+	// buffer
+	char *sendbuf = (char*)malloc(DEFAULT_BUFLEN);
+	memset(sendbuf, 0, DEFAULT_BUFLEN);
+	memcpy(sendbuf,reply,strlen(reply));
+	//TCP boundary maintain
+	int byte_send = 0;
+	while (byte_send < DEFAULT_BUFLEN)
+	{
+		//iResult = send(sock, sendbuf, sendbuflen, 0);
+		iResult = send(sender_sock, sendbuf + byte_send, DEFAULT_BUFLEN - byte_send, 0);
+		if (iResult > 0)
 		{
-			error_handling("sendto() failed with error: ", WSAGetLastError());
-			lck.lock();
-			rate_vector[my_thread_id] = 0;
-			tcp_client_num--;
-			lck.unlock();
-			closesocket(send_sock);
+			byte_send += iResult;
+		}
+
+		if (iResult == SOCKET_ERROR) {
+			error_handling("send failed with error: ", WSAGetLastError());
+			closesocket(sender_sock);
 			return false;
 		}
+	}	
 
-		//rate controlling
-		if (rate > 0 && seq_num > 1)
-		{
-			//check current rate
-			duration = timer.Elapsed();
-			current_rate = total_sent_bytes * 1.0 / (duration / 1000);
-
-			//rate control
-			if (gap*seq_num - last_dur>0)
-				Sleep(gap*seq_num - last_dur);
-			else
-				Sleep(gap);
-		}
-		else if (rate == 0 && seq_num > 1)
-		{
-			//check current rate
-			duration = timer.Elapsed();
-			current_rate = total_sent_bytes * 1.0 / (duration / 1000);
-		}
-		else if (seq_num == 1)
-		{
-			duration = double(timer.Elapsed());
-			current_rate = pkg_size;
-			Sleep(gap - duration);
-		}
-
-		total_sent_bytes += iResult;
-		if (--pkg_num == 0)
-			break;
-		seq_num++;
-
-		//update the display attributes
-		lck.lock();
-		rate_vector[my_thread_id] = current_rate;
-		lck.unlock();
-
-	}
-
-	//update the display attributes
-	lck.lock();
-	rate_vector[my_thread_id] = 0;
-	udp_client_num--;
-	lck.unlock();
-
-	packet_send_not_finished = false;
-
-	closesocket(send_sock);
+	closesocket(sender_sock);
 	return true;
 }
 
-bool UDP_Server_Handling(int udp_port)
+bool On_Demand_Server(int port)
 {
+	printf("On Demand mode\n");
 	int iResult = 0;
 	struct sockaddr_in client;
-	socklen_t client_socksize = sizeof(struct sockaddr_in);
+	socklen_t socksize = sizeof(struct sockaddr_in);
 
 	//create socket
-	SOCKET server_sock; //receiving request
+	SOCKET listen_sock; //receiving request
 
-	sockaddr_in UDP_Reiceiver_addr;
-	socklen_t addr_len = sizeof(UDP_Reiceiver_addr);
+	sockaddr_in TCP_receiver_addr;
+	TCP_receiver_addr.sin_family = AF_INET;
+	TCP_receiver_addr.sin_port = htons(port);
+	TCP_receiver_addr.sin_addr.s_addr = INADDR_ANY;
 
-	UDP_Reiceiver_addr.sin_family = AF_INET;
-	UDP_Reiceiver_addr.sin_port = htons(udp_port);
-	UDP_Reiceiver_addr.sin_addr.s_addr = INADDR_ANY;
-
-	server_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	if (server_sock == SOCKET_ERROR)
+	listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (listen_sock == INVALID_SOCKET)
 	{
-		error_handling("SOCKET create error: ", WSAGetLastError());
-		closesocket(server_sock);
+		error_handling("\nSOCKET create error: ", WSAGetLastError());
 #ifdef WIN32
 		WSACleanup();
 #endif
 		return false;
 	}
 
-	//binding socket
-	iResult = ::bind(server_sock, (sockaddr *)&UDP_Reiceiver_addr, sizeof(UDP_Reiceiver_addr));
+	//binding the socket
+#ifdef WIN32
+	iResult = ::bind(listen_sock, (LPSOCKADDR)&TCP_receiver_addr, sizeof(TCP_receiver_addr));
+#else
+	iResult = ::bind(listen_sock, (SOCKADDR *)&TCP_receiver_addr, sizeof(TCP_receiver_addr));
+#endif
 	if (iResult == SOCKET_ERROR)
 	{
-		error_handling("Unable to bind with error: ", WSAGetLastError());
-		closesocket(server_sock);
+		error_handling("\nUnable to bind with error: ", WSAGetLastError());
+		closesocket(listen_sock);
 #ifdef WIN32
 		WSACleanup();
 #endif
 		return false;
 	}
-	printf("Waiting for request...\n");
+	else
+		printf("\nBinding successfully\n");
 
-	//UDP buffer
-	char *recvbuf = (char*)malloc(30);
-	memset(recvbuf, 0, 30);
+	//listen to the socket
+	iResult = listen(listen_sock, SOMAXCONN);
+	if (iResult == SOCKET_ERROR) {
+		error_handling("\nlisten failed with error: ", WSAGetLastError());
+		closesocket(listen_sock);
+#ifdef WIN32
+		WSACleanup();
+#endif
+		return false;
+	}
 
 	while (1)
 	{
-		iResult = recvfrom(server_sock, recvbuf, 30, 0, (sockaddr*)&client, &client_socksize);
-		printf("\nPacket Received!\n");
-		char metadata[30], temp_pkg_size[10], temp_pkg_num[10], temp_rate[10];
-		memcpy(metadata, recvbuf, 30);
-		for (int i = 0; i < 10; i++)
-		{
-			temp_pkg_size[i] = metadata[i];
-			temp_pkg_num[i] = metadata[10 + i];
-			temp_rate[i] = metadata[20 + i];
+		SOCKET sender_sock; //connect to client
+		sender_sock = accept(listen_sock, (struct sockaddr *)&client, &socksize);
+		if (sender_sock == INVALID_SOCKET){
+			error_handling("\nAccept failed with error: ", WSAGetLastError());
+			closesocket(listen_sock);
+#ifdef WIN32
+			WSACleanup();
+#endif
+			break;
 		}
-		int pkg_size, pkg_num, rate;
-		pkg_size = atoi(temp_pkg_size);
-		pkg_num = atoi(temp_pkg_num);
-		rate = atoi(temp_rate);
+		else
+			printf("\nAccept the connection successfully\n");
 
-		std::thread(UDP_Server_Send, client, pkg_size, pkg_num, rate).detach();
+		std::thread(http_client_handling, sender_sock).detach();
 	}
 
 	//Don't need the listening socket
-	closesocket(server_sock);
+	closesocket(listen_sock);
 
-	// shutdown the connection since no more data will be sent
-	packet_send_not_finished = false;
 #ifdef WIN32
 	WSACleanup();
 #endif
 	printf("\nConnetion closing...\n");
 	return true;
+
 }
 
-bool Server_mode(int ref_inter, int tcp_port, int udp_port)
+char *preload_page(string file_name,long &fileSize)
+{
+	FILE *file = NULL;
+	char *buffer;
+
+	//Open file
+	file = fopen(file_name.c_str(), "rb");
+	if (!file)
+	{
+		fputs("File not found\n", stderr);
+		//file not found handling
+		file_name = "error.htm";
+	}
+
+	//Get file length
+	fileSize = getFileSize(file);
+
+	//Allocate memory
+	buffer = (char*)malloc(sizeof(char)*fileSize);
+	if (!buffer)
+	{
+		fprintf(stderr, "Memory error!");
+		fclose(file);
+		return false;
+	}
+	//Read file contents into buffer
+	int temp_result = fread(buffer, 1, fileSize, file);
+	if (temp_result != fileSize)
+	{
+		fputs("Reading error", stderr);
+		fclose(file);
+		return false;
+	}
+	fclose(file);
+
+	return buffer;
+}
+
+struct preload_pointer thread_pool_preload_page()
+{
+	long index_fileSize,error_fileSize,readme_fileSize;
+	char* index_header_pre = preload_page("index.htm",index_fileSize);
+	char* error_header_pre = preload_page("error.htm",error_fileSize);
+	char* readme_header_pre = preload_page("readme.htm",readme_fileSize);
+
+	char index_header[10240];
+	char error_header[10240];
+	char readme_header[10240];
+
+	//index_header_preload
+	sprintf(index_header, "HTTP/1.1 200 OK\n"
+		"Date: Thu, 19 Feb 2015 12:27:04 GMT\n"
+		"Connection: close\n"
+		"Server: Apache/2.2.3\n"
+		"Accept-Ranges: bytes\n"
+		"Content-Type: text/html\n"
+		"Content-Length: %i\n"
+		"\n", index_fileSize);
+	long index_header_len = strlen(index_header);
+
+	char *index_reply = (char *)malloc(index_header_len + index_fileSize);
+	memset(index_reply, 0, index_header_len + index_fileSize);
+	memcpy(index_reply, index_header, index_header_len);
+	memcpy(index_reply + index_header_len, index_header_pre, index_fileSize);
+
+	//error_header_preload
+	sprintf(error_header, "HTTP/1.1 404 Not Found\n"
+		"Date: Thu, 19 Feb 2015 12:27:04 GMT\n"
+		"Connection: close\n"
+		"Server: Apache/2.2.3\n"
+		"Accept-Ranges: bytes\n"
+		"Content-Type: text/html\n"
+		"Content-Length: %i\n"
+		"\n", error_fileSize);
+	long error_header_len = strlen(error_header);
+
+	char *error_reply = (char *)malloc(error_header_len + error_fileSize);
+	memset(error_reply, 0, error_header_len + error_fileSize);
+	memcpy(error_reply, error_header, error_header_len);
+	memcpy(error_reply + error_header_len, error_header_pre, error_fileSize);
+
+	//readme_header_preload
+	sprintf(readme_header, "HTTP/1.1 200 OK\n"
+		"Date: Thu, 19 Feb 2015 12:27:04 GMT\n"
+		"Connection: close\n"
+		"Server: Apache/2.2.3\n"
+		"Accept-Ranges: bytes\n"
+		"Content-Type: text/html\n"
+		"Content-Length: %i\n"
+		"\n", readme_fileSize);
+	long readme_header_len = strlen(readme_header);
+
+	char *readme_reply = (char *)malloc(readme_header_len + readme_fileSize);
+	memset(readme_reply, 0, readme_header_len + readme_fileSize);
+	memcpy(readme_reply, readme_header, readme_header_len);
+	memcpy(readme_reply + readme_header_len, readme_header_pre, readme_fileSize);
+
+	preload_pointer pointers;
+	pointers.index_point = index_reply;
+	pointers.error_point = error_reply;
+	pointers.readme_point = readme_reply;
+	printf("Preload pages done!\n");
+	return pointers;
+
+}
+
+bool thread_pool_client_handling(SOCKET sender_sock)
+{
+#ifndef WIN32
+	signal(SIGPIPE, SIG_IGN);
+#endif
+	int iResult = 0;
+
+	//-------------Receiving the http request and parse it---------//
+	//printf("\nReceiving the metadata\n");
+	char *temp_recv_buf = (char*)malloc(DEFAULT_BUFLEN);
+	memset(temp_recv_buf, 0, DEFAULT_BUFLEN);
+	iResult = recv(sender_sock, temp_recv_buf, DEFAULT_BUFLEN, 0);
+
+	//printf("%s\n",temp_recv_buf);
+
+	string token_array[2];
+	int tem_num = 0;
+	char *token = strtok(temp_recv_buf, " ");
+	while (token != NULL && tem_num<2) {
+		token_array[tem_num] = token;
+		token = strtok(NULL, " ");
+		tem_num++;
+	}
+	/*
+	the first token is GET (use for checking)
+	the second token is the file name('/' stands for index.htm)
+	*/
+
+	//-------------Creating response data--------------------------------//
+
+	//create file locator
+	string file_name = token_array[1];
+	string status_code = "200 OK";
+	bool file_not_found = false;
+	if (strcmp(file_name.c_str(),"/")==0)
+		file_name = "index.htm";
+	else if (file_name[0]=='/')
+		file_name.erase(0, 1);
+
+	//need some special handling for index,error,and readme!!!
+	preloaded file_preloaded = none;
+	if (strcmp( file_name.c_str(), "index.htm")==0)
+		file_preloaded = index_page;
+	else if (strcmp( file_name.c_str() , "error.htm")==0)
+		file_preloaded = error_page;
+	else if (strcmp( file_name.c_str() , "readme.htm")==0)
+		file_preloaded = readme_page;
+	else
+		file_preloaded = none;
+
+	char *reply;
+
+	if (file_preloaded == none)
+	{
+		//Open file
+		FILE *file = NULL;
+		char *buffer;
+		file = fopen(file_name.c_str(), "rb");
+		if (!file)
+		{
+			fputs("File not found\n", stderr);
+
+			//file not found handling
+			file_name = "error.htm";
+			status_code = "404 Not Found";
+			file_not_found = true;
+		}
+
+		if (file_not_found)
+		{
+			file = fopen(file_name.c_str(), "rb");
+		}
+
+		//Get file length
+		long fileSize = getFileSize(file);
+
+		//Allocate memory
+		buffer = (char*)malloc(sizeof(char)*fileSize);
+		if (!buffer)
+		{
+			fprintf(stderr, "Memory error!\n");
+			fclose(file);
+			return false;
+		}
+		//Read file contents into buffer
+		int temp_result = fread(buffer, 1, fileSize, file);
+		if (temp_result != fileSize)
+		{
+			fputs("Reading error\n", stderr);
+			fclose(file);
+			return false;
+		}
+		fclose(file);
+
+		char header[10240];
+
+		sprintf(header, "HTTP/1.1 %s\n"
+		"Date: Thu, 19 Feb 2015 12:27:04 GMT\n"
+		"Connection: close\n"
+		"Server: Apache/2.2.3\n"
+		"Accept-Ranges: bytes\n"
+		"Content-Type: text/html\n"
+		"Content-Length: %i\n"	
+        "\n", status_code.c_str(), fileSize);
+		long header_len = strlen(header);
+
+		reply = (char *)malloc(header_len + fileSize);
+		memset(reply, 0, header_len + fileSize);
+		memcpy(reply, header,header_len);
+		memcpy(reply + header_len, buffer, fileSize);
+	}
+	else{
+		//preload the pages
+		//preload_pointer pointers = thread_pool_preload_page();
+		if (file_preloaded == index_page)
+			reply = pointers.index_point;
+		else if (file_preloaded == error_page)
+			reply = pointers.error_point;
+		else if (file_preloaded == readme_page)
+			reply = pointers.readme_point;
+	}	
+
+	//-------------Entering sender mode and send data--------------------//
+
+	// buffer
+	char *sendbuf = (char*)malloc(DEFAULT_BUFLEN);
+	long reply_len = strlen(reply);
+	memset(sendbuf, 0, DEFAULT_BUFLEN);
+	memcpy(sendbuf, reply, reply_len);
+	//TCP boundary maintain
+	int byte_send = 0;
+	while (byte_send < DEFAULT_BUFLEN)
+	{
+		//iResult = send(sock, sendbuf, sendbuflen, 0);
+		iResult = send(sender_sock, sendbuf + byte_send, DEFAULT_BUFLEN - byte_send, 0);
+		if (iResult > 0)
+		{
+			byte_send += iResult;
+		}
+
+		if (iResult == SOCKET_ERROR) {
+			error_handling("send failed with error: ", WSAGetLastError());
+			closesocket(sender_sock);
+			return false;
+		}
+	}
+
+	closesocket(sender_sock);
+	return true;
+}
+
+void session_thread()
+{
+	SOCKET sock = INVALID_SOCKET;
+	while (true)
+	{
+		std::unique_lock<std::mutex> lk(lck);
+		while (socket_queue.empty())
+			cv.wait(lk);
+		sock = socket_queue.front();
+		socket_queue.pop();
+		lk.unlock();
+		thread_pool_client_handling(sock);
+		//cv.notify_one();
+	}
+}
+
+void AssignThread(SOCKET sock, int thread_num)
+{
+	//cv.notify_one();
+	std::unique_lock<std::mutex> lk(lck);
+	socket_queue.push(sock);
+	
+	//cv.wait(lk);
+	lk.unlock();
+	cv.notify_one();
+}
+
+bool Thread_Pool_Server(int port, int thread_num)
+{
+	pointers = thread_pool_preload_page();
+	printf("thread-pool mode\n");
+
+	//creating threads beforehand
+	for (int i = 0; i < thread_num; i++)
+	{
+		thread_array.push_back(std::thread(session_thread));
+		printf("Creating the thread #%d and add to the pool\n", i);
+	}
+
+	int iResult = 0;
+	struct sockaddr_in client;
+	socklen_t socksize = sizeof(struct sockaddr_in);
+
+	//create socket
+	SOCKET listen_sock; //receiving request
+
+	sockaddr_in TCP_receiver_addr;
+	TCP_receiver_addr.sin_family = AF_INET;
+	TCP_receiver_addr.sin_port = htons(port);
+	TCP_receiver_addr.sin_addr.s_addr = INADDR_ANY;
+
+	listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (listen_sock == INVALID_SOCKET)
+	{
+		error_handling("\nSOCKET create error: ", WSAGetLastError());
+#ifdef WIN32
+		WSACleanup();
+#endif
+		return false;
+	}
+
+	//binding the socket
+#ifdef WIN32
+	iResult = ::bind(listen_sock, (LPSOCKADDR)&TCP_receiver_addr, sizeof(TCP_receiver_addr));
+#else
+	iResult = ::bind(listen_sock, (SOCKADDR *)&TCP_receiver_addr, sizeof(TCP_receiver_addr));
+#endif
+	if (iResult == SOCKET_ERROR)
+	{
+		error_handling("\nUnable to bind with error: ", WSAGetLastError());
+		closesocket(listen_sock);
+#ifdef WIN32
+		WSACleanup();
+#endif
+		return false;
+	}
+	else
+		printf("\nBinding successfully\n");
+
+	//listen to the socket
+	iResult = listen(listen_sock, SOMAXCONN);
+	if (iResult == SOCKET_ERROR) {
+		error_handling("\nlisten failed with error: ", WSAGetLastError());
+		closesocket(listen_sock);
+#ifdef WIN32
+		WSACleanup();
+#endif
+		return false;
+	}
+
+	while (1)
+	{
+		SOCKET sender_sock; //connect to client
+		sender_sock = accept(listen_sock, (struct sockaddr *)&client, &socksize);
+		if (sender_sock == INVALID_SOCKET){
+			error_handling("\nAccept failed with error: ", WSAGetLastError());
+			closesocket(listen_sock);
+#ifdef WIN32
+			WSACleanup();
+#endif
+			break;
+		}
+		//else
+			//printf("\nAccept the connection successfully\n");
+		//AssignThread(sender_sock,thread_num);
+		std::unique_lock<std::mutex> lk(lck);
+		socket_queue.push(sender_sock);
+		lk.unlock();
+		cv.notify_one();
+	}
+
+	//Don't need the listening socket
+	closesocket(listen_sock);
+
+	for (int i = 0; i < thread_num; i++)
+	{
+		thread_array[i].join();
+	}
+	return true;
+}
+
+bool Server_mode(string http_mode, int tcp_port, int thread_num)
 {
 	//--------------------Creating multithread to sned data------------//
 	int iResult = 0;
@@ -984,21 +1117,13 @@ bool Server_mode(int ref_inter, int tcp_port, int udp_port)
 	}
 #endif
 
-	//TCP thread
-	std::thread th_tcp(TCP_Server_Handling, tcp_port);
-	printf("TCP Connection thread created\n");
-
-	//UDP Thread
-	std::thread th_udp(UDP_Server_Handling, udp_port);
-	printf("UDP Connection thread created\n");
-
-	//Display Thread
-	printf("Dssplay Connection thread created\n");
-	std::thread th_display(display_clients_num, ref_inter);
-
-	th_tcp.join();
-	th_udp.join();
-	th_display.join();
+	//check mode
+	if (strcmp(http_mode.c_str(),"o")==0)
+		On_Demand_Server(tcp_port);
+	else if(strcmp(http_mode.c_str(),"p")==0)
+		Thread_Pool_Server(tcp_port,thread_num);
+	else
+		printf("\nNo such server mode\n");
 
 	return true;
 }
@@ -1054,11 +1179,37 @@ int main(int argc, char *argv[])
 #endif
 			return false;
 		}
-		refresh_interval = atoi(argv[2]);
-		tcp_port = atoi(argv[3]);
-		udp_port = atoi(argv[4]);
-
-		Server_mode(refresh_interval, tcp_port, udp_port);
+		tcp_port = atoi(argv[2]);
+		string http_mode = argv[3];
+		//in on-demand mode
+		if (strcmp(http_mode.c_str(),"o")==0)
+		{
+			if (!check_arg_num(argc, 'o'))
+			{
+#ifdef WIN32
+				WSACleanup();
+#endif
+				return false;
+			}
+			Server_mode(http_mode, tcp_port,0);		
+		}
+		//in thread-pool mode
+		else if(strcmp(http_mode.c_str(),"p")==0)
+		{
+			if (!check_arg_num(argc, 'p'))
+			{
+#ifdef WIN32
+				WSACleanup();
+#endif
+				return false;
+			}
+			int thread_num = atoi(argv[4]);
+			Server_mode(http_mode, tcp_port, thread_num);
+		}
+		else
+		{
+			printf("No such mode\n");
+		}
 	}
 	else
 	{
