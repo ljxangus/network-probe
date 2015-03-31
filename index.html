@@ -16,7 +16,7 @@
     <header>
       <div class="container">
         <h1>Network Probe</h1>
-        <h2>network testing</h2>
+        <h2>Probing your network is that simple.</h2>
 
         <section id="downloads">
           <a href="https://github.com/ljxangus/network-probe/zipball/master" class="btn">Download as .zip</a>
@@ -40,20 +40,32 @@
 
 <p>The project contains three different versions:</p>
 
-<ol>
-<li>Basic Prototype for network speed probe. </li>
+<h5>
+<a id="basic-prototype-for-network-speed-probe" class="anchor" href="#basic-prototype-for-network-speed-probe" aria-hidden="true"><span class="octicon octicon-link"></span></a>Basic Prototype for network speed probe.</h5>
+
+<ul>
 <li>The basic prototype can only run on Windows OS, and it can connect to any host. But the UDP error checking mechanism has some bugs which results in extremely high error rate.</li>
-<li><p>It also contains a hostname resolution function. You can check every website or host's ip address and related information.</p></li>
-<li><p>Network Probe for multiuser. </p></li>
+<li>It also contains a hostname resolution function. You can check every website or host's ip address and related information.</li>
+</ul>
+
+<h5>
+<a id="network-probe-for-multiuser" class="anchor" href="#network-probe-for-multiuser" aria-hidden="true"><span class="octicon octicon-link"></span></a>Network Probe for multiuser.</h5>
+
+<ul>
 <li>You can run only server at a public computer and test the network speed from any of your client computer to the server. No limitation for the client number.</li>
 <li>Robustness has been considered and the server runs in multithreading mode. Once a thread died or unexpectedly crash, the other thread will not be affected.</li>
-<li><p>Available for <code>Windows</code>, <code>Ubuntu</code>, and <code>CentOS</code>.</p></li>
-<li><p>Simple Webserver Probe.</p></li>
+<li>Available for <code>Windows</code>, <code>Ubuntu</code>, and <code>CentOS</code>.</li>
+</ul>
+
+<h5>
+<a id="simple-webserver-probe" class="anchor" href="#simple-webserver-probe" aria-hidden="true"><span class="octicon octicon-link"></span></a>Simple Webserver Probe.</h5>
+
+<ul>
 <li>Put all the files that you want to let user access in the same directory. It can handle basic browser HTTP REQUEST, and return the information it want.</li>
 <li>Tested with httperf so the robustness can be guaranteed.</li>
 <li>Two modes supported: On-Demand Mode and Thread Pool Mode.</li>
 <li>Available for <code>Windows</code>, <code>Ubuntu</code>, and <code>CentOS</code>. </li>
-</ol>
+</ul>
 
 <h3>
 <a id="how-to-install" class="anchor" href="#how-to-install" aria-hidden="true"><span class="octicon octicon-link"></span></a>How to install?</h3>
@@ -68,18 +80,13 @@ $ ./NetProbe (arguments according to the usage)
 </code></pre>
 
 <ul>
-<li>
-<strong>In Windows</strong>
-NetProbe.exe to be released. You can compile by yourself. Please select <code>Win32 Console</code> and add <code>EZ_TIMER.H</code> to the header files.</li>
+<li><strong>In Windows</strong></li>
 </ul>
 
+<p>NetProbe.exe to be released. You can compile by yourself. Please select <code>Win32 Console</code> and add <code>EZ_TIMER.H</code> to the header files.</p>
+
 <h3>
-<a id="authors-and-contributors" class="anchor" href="#authors-and-contributors" aria-hidden="true"><span class="octicon octicon-link"></span></a>Authors and Contributors</h3>
-
-<p>Copyright by <a href="https://github.com/ljxangus" class="user-mention">@ljxangus</a> Jonathan. Feel free to make any modification to the source code after inform me.</p>
-
-<h4>
-<a id="some-files-overview" class="anchor" href="#some-files-overview" aria-hidden="true"><span class="octicon octicon-link"></span></a>Some files overview</h4>
+<a id="some-files-overview" class="anchor" href="#some-files-overview" aria-hidden="true"><span class="octicon octicon-link"></span></a>Some files overview</h3>
 
 <p>AppWizard has created this NetProbe application for you.</p>
 
@@ -128,6 +135,11 @@ named NetProbe.pch and a precompiled types file named StdAfx.obj.</p>
 should add to or customize.</p>
 
 <hr>
+
+<h3>
+<a id="authors-and-contributors" class="anchor" href="#authors-and-contributors" aria-hidden="true"><span class="octicon octicon-link"></span></a>Authors and Contributors</h3>
+
+<p>Copyright by <a href="https://github.com/ljxangus" class="user-mention">@ljxangus</a> Jonathan. Feel free to make any modification to the source code after inform me.</p>
       </section>
     </div>
 
