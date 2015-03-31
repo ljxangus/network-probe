@@ -15,6 +15,7 @@
 #ifdef WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+//#define TCP_BOUNDARY
 #pragma comment(lib,"ws2_32.lib")
 #else // Assume Linux
 #include <sys/types.h>
@@ -65,6 +66,7 @@ struct preload_pointer
 	char *index_point;
 	char *error_point;
 	char *readme_point;
+	long index_size,error_size,readme_size;
 };
 
 preload_pointer pointers;
@@ -78,7 +80,7 @@ bool packet_send_not_finished = true;
 bool start_counting_time = false;
 bool last_is_127_or_m1 = false;
 //preloaded pages
-enum preloaded {index_page,error_page,readme_page,none};
+enum preloaded { index_page, error_page, readme_page, none };
 
 string warning = "Incorrect input format.\n\nUsage: NetProbe.exe[mode:s/c] <parameters depending on mode>\n\n========================================================================\n'c' [ref_int] [server_host] [server_port] [protocol] [pkt_size] [rate] [num]\n's' [port] [server_mode:o/p] [optional:thread number]\n========================================================================";
 
@@ -93,7 +95,7 @@ bool check_arg_num(int argc, char mode)
 	bool result = false;
 	if (mode == 'c' && argc == 9)
 		result = true;
-	else if (mode == 's'&& (argc == 4 || argc == 5))
+	else if (mode == 's' && (argc == 4 || argc == 5))
 		result = true;
 	else if (mode == 'o' && argc == 4)
 		result = true;
@@ -105,13 +107,13 @@ bool check_arg_num(int argc, char mode)
 }
 
 // Get the size of a file
-long getFileSize(FILE *file)
+unsigned long getFileSize(FILE *file)
 {
-	long lCurPos, lEndPos;
-	lCurPos = ftell(file);
-	fseek(file, 0, 2);
+	unsigned long lEndPos;
+	//lCurPos = ftell(file);
+	fseek(file, 0, SEEK_END);
 	lEndPos = ftell(file);
-	fseek(file, lCurPos, 0);
+	fseek(file, 0, SEEK_SET);
 	return lEndPos;
 }
 
@@ -354,7 +356,7 @@ bool TCP_Client(int remote_port, char* remote_host, int ref_inter, int pkg_size,
 	WSACleanup();
 #endif
 	return true;
-}
+	}
 
 bool UDP_Client(int remote_port, char* remote_host, int ref_inter, int pkg_size, double req_rate, int req_pkg_num)
 {
@@ -516,7 +518,7 @@ bool UDP_Client(int remote_port, char* remote_host, int ref_inter, int pkg_size,
 bool http_client_handling(SOCKET sender_sock)
 {
 #ifndef WIN32
-	signal(SIGPIPE,SIG_IGN);
+	signal(SIGPIPE, SIG_IGN);
 #endif
 	int iResult = 0;
 
@@ -525,20 +527,20 @@ bool http_client_handling(SOCKET sender_sock)
 	char *temp_recv_buf = (char*)malloc(DEFAULT_BUFLEN);
 	memset(temp_recv_buf, 0, DEFAULT_BUFLEN);
 	iResult = recv(sender_sock, temp_recv_buf, DEFAULT_BUFLEN, 0);
-	
+
 	//printf("%s\n",temp_recv_buf);
-	
+
 	string token_array[2];
 	int tem_num = 0;
 	char *token = strtok(temp_recv_buf, " ");
 	while (token != NULL && tem_num<2) {
 		token_array[tem_num] = token;
-        token = strtok(NULL, " ");
+		token = strtok(NULL, " ");
 		tem_num++;
-    }
+	}
 	/*
 	the first token is GET (use for checking)
-	the second token is the file name('/' stands for index.htm)	
+	the second token is the file name('/' stands for index.htm)
 	*/
 
 	//-------------Creating response data--------------------------------//
@@ -547,9 +549,9 @@ bool http_client_handling(SOCKET sender_sock)
 	string file_name = token_array[1];
 	string status_code = "200 OK";
 	bool file_not_found = false;
-	if (strcmp(file_name.c_str(),"/")==0)
+	if (strcmp(file_name.c_str(), "/") == 0)
 		file_name = "index.htm";
-	else if (file_name[0]=='/')
+	else if (file_name[0] == '/')
 		file_name.erase(0, 1);
 
 	FILE *file = NULL;
@@ -572,6 +574,11 @@ bool http_client_handling(SOCKET sender_sock)
 	if (file_not_found)
 	{
 		file = fopen(file_name.c_str(), "rb");
+		if (!file)
+		{
+			closesocket(sender_sock);
+			return false;
+		}
 	}
 
 	//Get file length
@@ -596,20 +603,26 @@ bool http_client_handling(SOCKET sender_sock)
 	fclose(file);
 
 	char header[10240];
-
+	/*
 	sprintf(header, "HTTP/1.1 %s\n"
-		"Date: Thu, 19 Feb 2015 12:27:04 GMT\n"
-		"Connection: close\n"
-		"Server: Apache/2.2.3\n"
-		"Accept-Ranges: bytes\n"
-		"Content-Type: text/html\n"
-		"Content-Length: %i\n"	
-        "\n", status_code.c_str(), fileSize);
+	"Date: Thu, 19 Feb 2015 12:27:04 GMT\n"
+	"Connection: close\n"
+	"Server: Apache/2.2.3\n"
+	"Accept-Ranges: bytes\n"
+	"Content-Type: text/html\n"
+	"Content-Length: %lu\n"
+	"\n", status_code.c_str(), fileSize);
+	*/
+	sprintf(header, "HTTP/1.1 %s\r\n"
+		"Connection: close\r\n"
+		"Content-Type: text/html\r\n"
+		"Content-Length: %lu\r\n"
+		"\r\n", status_code.c_str(), fileSize);
 	long header_len = strlen(header);
 
 	char *reply = (char *)malloc(header_len + fileSize);
 	memset(reply, 0, header_len + fileSize);
-	memcpy(reply, header,header_len);
+	memcpy(reply, header, header_len);
 	memcpy(reply + header_len, buffer, fileSize);
 
 	//-------------Entering sender mode and send data--------------------//
@@ -617,8 +630,9 @@ bool http_client_handling(SOCKET sender_sock)
 	// buffer
 	char *sendbuf = (char*)malloc(DEFAULT_BUFLEN);
 	memset(sendbuf, 0, DEFAULT_BUFLEN);
-	memcpy(sendbuf,reply,strlen(reply));
+	memcpy(sendbuf, reply, strlen(reply));
 	//TCP boundary maintain
+#ifdef TCP_BOUNDARY
 	int byte_send = 0;
 	while (byte_send < DEFAULT_BUFLEN)
 	{
@@ -634,8 +648,23 @@ bool http_client_handling(SOCKET sender_sock)
 			closesocket(sender_sock);
 			return false;
 		}
-	}	
-
+		//this_thread::sleep_for(chrono::milliseconds(50));
+	}
+#endif
+#ifndef TCP_BOUNDARY
+	iResult = send(sender_sock, sendbuf, header_len + fileSize, 0);
+	if (iResult == SOCKET_ERROR) {
+		error_handling("send failed with error: ", WSAGetLastError());
+		closesocket(sender_sock);
+		return false;
+	}
+#endif
+	//printf("%s\n", "\nSend the data back to client!");	
+	//printf("The content is:\n%s\n", sendbuf);
+	free(temp_recv_buf);
+	free(sendbuf);
+	free(reply);
+	free(buffer);
 	closesocket(sender_sock);
 	return true;
 }
@@ -706,8 +735,8 @@ bool On_Demand_Server(int port)
 #endif
 			break;
 		}
-		else
-			printf("\nAccept the connection successfully\n");
+		//else
+		//printf("\nAccept the connection successfully\n");
 
 		std::thread(http_client_handling, sender_sock).detach();
 	}
@@ -723,7 +752,7 @@ bool On_Demand_Server(int port)
 
 }
 
-char *preload_page(string file_name,long &fileSize)
+char *preload_page(string file_name, long &fileSize)
 {
 	FILE *file = NULL;
 	char *buffer;
@@ -746,7 +775,7 @@ char *preload_page(string file_name,long &fileSize)
 	{
 		fprintf(stderr, "Memory error!");
 		fclose(file);
-		return false;
+		return NULL;
 	}
 	//Read file contents into buffer
 	int temp_result = fread(buffer, 1, fileSize, file);
@@ -754,7 +783,7 @@ char *preload_page(string file_name,long &fileSize)
 	{
 		fputs("Reading error", stderr);
 		fclose(file);
-		return false;
+		return NULL;
 	}
 	fclose(file);
 
@@ -763,24 +792,21 @@ char *preload_page(string file_name,long &fileSize)
 
 struct preload_pointer thread_pool_preload_page()
 {
-	long index_fileSize,error_fileSize,readme_fileSize;
-	char* index_header_pre = preload_page("index.htm",index_fileSize);
-	char* error_header_pre = preload_page("error.htm",error_fileSize);
-	char* readme_header_pre = preload_page("readme.htm",readme_fileSize);
+	long index_fileSize, error_fileSize, readme_fileSize;
+	char* index_header_pre = preload_page("index.htm", index_fileSize);
+	char* error_header_pre = preload_page("error.htm", error_fileSize);
+	char* readme_header_pre = preload_page("readme.htm", readme_fileSize);
 
 	char index_header[10240];
 	char error_header[10240];
 	char readme_header[10240];
 
 	//index_header_preload
-	sprintf(index_header, "HTTP/1.1 200 OK\n"
-		"Date: Thu, 19 Feb 2015 12:27:04 GMT\n"
-		"Connection: close\n"
-		"Server: Apache/2.2.3\n"
-		"Accept-Ranges: bytes\n"
-		"Content-Type: text/html\n"
-		"Content-Length: %i\n"
-		"\n", index_fileSize);
+	sprintf(index_header, "HTTP/1.1 200 OK\r\n"
+		"Connection: close\r\n"
+		"Content-Type: text/html\r\n"
+		"Content-Length: %lu\r\n"
+		"\r\n", index_fileSize);
 	long index_header_len = strlen(index_header);
 
 	char *index_reply = (char *)malloc(index_header_len + index_fileSize);
@@ -789,14 +815,11 @@ struct preload_pointer thread_pool_preload_page()
 	memcpy(index_reply + index_header_len, index_header_pre, index_fileSize);
 
 	//error_header_preload
-	sprintf(error_header, "HTTP/1.1 404 Not Found\n"
-		"Date: Thu, 19 Feb 2015 12:27:04 GMT\n"
-		"Connection: close\n"
-		"Server: Apache/2.2.3\n"
-		"Accept-Ranges: bytes\n"
-		"Content-Type: text/html\n"
-		"Content-Length: %i\n"
-		"\n", error_fileSize);
+	sprintf(error_header, "HTTP/1.1 200 OK\r\n"
+		"Connection: close\r\n"
+		"Content-Type: text/html\r\n"
+		"Content-Length: %lu\r\n"
+		"\r\n", error_fileSize);
 	long error_header_len = strlen(error_header);
 
 	char *error_reply = (char *)malloc(error_header_len + error_fileSize);
@@ -805,14 +828,11 @@ struct preload_pointer thread_pool_preload_page()
 	memcpy(error_reply + error_header_len, error_header_pre, error_fileSize);
 
 	//readme_header_preload
-	sprintf(readme_header, "HTTP/1.1 200 OK\n"
-		"Date: Thu, 19 Feb 2015 12:27:04 GMT\n"
-		"Connection: close\n"
-		"Server: Apache/2.2.3\n"
-		"Accept-Ranges: bytes\n"
-		"Content-Type: text/html\n"
-		"Content-Length: %i\n"
-		"\n", readme_fileSize);
+	sprintf(readme_header, "HTTP/1.1 200 OK\r\n"
+		"Connection: close\r\n"
+		"Content-Type: text/html\r\n"
+		"Content-Length: %lu\r\n"
+		"\r\n", readme_fileSize);
 	long readme_header_len = strlen(readme_header);
 
 	char *readme_reply = (char *)malloc(readme_header_len + readme_fileSize);
@@ -824,6 +844,9 @@ struct preload_pointer thread_pool_preload_page()
 	pointers.index_point = index_reply;
 	pointers.error_point = error_reply;
 	pointers.readme_point = readme_reply;
+	pointers.index_size = index_header_len + index_fileSize;
+	pointers.error_size = error_header_len + error_fileSize;
+	pointers.readme_size = readme_header_len + readme_fileSize;
 	printf("Preload pages done!\n");
 	return pointers;
 
@@ -835,6 +858,8 @@ bool thread_pool_client_handling(SOCKET sender_sock)
 	signal(SIGPIPE, SIG_IGN);
 #endif
 	int iResult = 0;
+	char *buffer;
+	long combine_size = 0;
 
 	//-------------Receiving the http request and parse it---------//
 	//printf("\nReceiving the metadata\n");
@@ -863,18 +888,18 @@ bool thread_pool_client_handling(SOCKET sender_sock)
 	string file_name = token_array[1];
 	string status_code = "200 OK";
 	bool file_not_found = false;
-	if (strcmp(file_name.c_str(),"/")==0)
+	if (strcmp(file_name.c_str(), "/") == 0)
 		file_name = "index.htm";
-	else if (file_name[0]=='/')
+	else if (file_name[0] == '/')
 		file_name.erase(0, 1);
 
 	//need some special handling for index,error,and readme!!!
 	preloaded file_preloaded = none;
-	if (strcmp( file_name.c_str(), "index.htm")==0)
+	if (strcmp(file_name.c_str(), "index.htm") == 0)
 		file_preloaded = index_page;
-	else if (strcmp( file_name.c_str() , "error.htm")==0)
+	else if (strcmp(file_name.c_str(), "error.htm") == 0)
 		file_preloaded = error_page;
-	else if (strcmp( file_name.c_str() , "readme.htm")==0)
+	else if (strcmp(file_name.c_str(), "readme.htm") == 0)
 		file_preloaded = readme_page;
 	else
 		file_preloaded = none;
@@ -885,7 +910,6 @@ bool thread_pool_client_handling(SOCKET sender_sock)
 	{
 		//Open file
 		FILE *file = NULL;
-		char *buffer;
 		file = fopen(file_name.c_str(), "rb");
 		if (!file)
 		{
@@ -925,31 +949,43 @@ bool thread_pool_client_handling(SOCKET sender_sock)
 
 		char header[10240];
 
-		sprintf(header, "HTTP/1.1 %s\n"
-		"Date: Thu, 19 Feb 2015 12:27:04 GMT\n"
-		"Connection: close\n"
-		"Server: Apache/2.2.3\n"
-		"Accept-Ranges: bytes\n"
-		"Content-Type: text/html\n"
-		"Content-Length: %i\n"	
-        "\n", status_code.c_str(), fileSize);
+		sprintf(header, "HTTP/1.1 %s\r\n"
+		"Connection: close\r\n"
+		"Content-Type: text/html\r\n"
+		"Content-Length: %lu\r\n"
+		"\r\n", status_code.c_str(), fileSize);
 		long header_len = strlen(header);
 
 		reply = (char *)malloc(header_len + fileSize);
 		memset(reply, 0, header_len + fileSize);
-		memcpy(reply, header,header_len);
+		memcpy(reply, header, header_len);
 		memcpy(reply + header_len, buffer, fileSize);
+		combine_size = header_len + fileSize;
 	}
 	else{
 		//preload the pages
 		//preload_pointer pointers = thread_pool_preload_page();
-		if (file_preloaded == index_page)
-			reply = pointers.index_point;
+		if (file_preloaded == index_page){
+			reply = (char *)malloc(pointers.index_size);
+			memset(reply, 0, pointers.index_size);
+			memcpy(reply,pointers.index_point,pointers.index_size);
+			combine_size = pointers.index_size;
+		}
 		else if (file_preloaded == error_page)
-			reply = pointers.error_point;
+		{
+			reply = (char *)malloc(pointers.error_size);
+			memset(reply, 0, pointers.error_size);
+			memcpy(reply,pointers.error_point,pointers.error_size);
+			combine_size = pointers.error_size;
+		}
 		else if (file_preloaded == readme_page)
-			reply = pointers.readme_point;
-	}	
+		{
+			reply = (char *)malloc(pointers.readme_size);
+			memset(reply, 0, pointers.readme_size);
+			memcpy(reply,pointers.readme_point,pointers.readme_size);
+			combine_size = pointers.readme_size;
+		}
+	}
 
 	//-------------Entering sender mode and send data--------------------//
 
@@ -959,6 +995,7 @@ bool thread_pool_client_handling(SOCKET sender_sock)
 	memset(sendbuf, 0, DEFAULT_BUFLEN);
 	memcpy(sendbuf, reply, reply_len);
 	//TCP boundary maintain
+#ifdef TCP_BOUNDARY
 	int byte_send = 0;
 	while (byte_send < DEFAULT_BUFLEN)
 	{
@@ -975,8 +1012,20 @@ bool thread_pool_client_handling(SOCKET sender_sock)
 			return false;
 		}
 	}
+#endif
+#ifndef TCP_BOUNDARY
+	iResult = send(sender_sock, sendbuf, combine_size, 0);
+	if (iResult == SOCKET_ERROR) {
+		error_handling("send failed with error: ", WSAGetLastError());
+		closesocket(sender_sock);
+		return false;
+	}
+#endif
 
 	closesocket(sender_sock);
+	free(temp_recv_buf);
+	free(sendbuf);
+	free(reply);
 	return true;
 }
 
@@ -1001,7 +1050,7 @@ void AssignThread(SOCKET sock, int thread_num)
 	//cv.notify_one();
 	std::unique_lock<std::mutex> lk(lck);
 	socket_queue.push(sock);
-	
+
 	//cv.wait(lk);
 	lk.unlock();
 	cv.notify_one();
@@ -1083,7 +1132,7 @@ bool Thread_Pool_Server(int port, int thread_num)
 			break;
 		}
 		//else
-			//printf("\nAccept the connection successfully\n");
+		//printf("\nAccept the connection successfully\n");
 		//AssignThread(sender_sock,thread_num);
 		std::unique_lock<std::mutex> lk(lck);
 		socket_queue.push(sender_sock);
@@ -1118,10 +1167,10 @@ bool Server_mode(string http_mode, int tcp_port, int thread_num)
 #endif
 
 	//check mode
-	if (strcmp(http_mode.c_str(),"o")==0)
+	if (strcmp(http_mode.c_str(), "o") == 0)
 		On_Demand_Server(tcp_port);
-	else if(strcmp(http_mode.c_str(),"p")==0)
-		Thread_Pool_Server(tcp_port,thread_num);
+	else if (strcmp(http_mode.c_str(), "p") == 0)
+		Thread_Pool_Server(tcp_port, thread_num);
 	else
 		printf("\nNo such server mode\n");
 
@@ -1147,7 +1196,7 @@ int main(int argc, char *argv[])
 
 	int iResult = 0;
 
-	if (strcmp(mode.c_str(),"c")==0)
+	if (strcmp(mode.c_str(), "c") == 0)
 	{
 		//argument initialization
 		printf("Client Mode\n");
@@ -1164,13 +1213,13 @@ int main(int argc, char *argv[])
 		packet_size = atoi(argv[6]);
 		rate = atof(argv[7]);
 		num = atoi(argv[8]);
-		if (strcmp(protocol.c_str(),"TCP")==0)
+		if (strcmp(protocol.c_str(), "TCP") == 0)
 			TCP_Client(remote_port, remote_host, refresh_interval, packet_size, rate, num);
-		else if (strcmp(protocol.c_str(),"UDP")==0)
+		else if (strcmp(protocol.c_str(), "UDP") == 0)
 			UDP_Client(remote_port, remote_host, refresh_interval, packet_size, rate, num);
 
 	}
-	else if (strcmp(mode.c_str(),"s")==0)
+	else if (strcmp(mode.c_str(), "s") == 0)
 	{
 		printf("Server Mode\n");
 		if (!check_arg_num(argc, 's')){
@@ -1182,7 +1231,7 @@ int main(int argc, char *argv[])
 		tcp_port = atoi(argv[2]);
 		string http_mode = argv[3];
 		//in on-demand mode
-		if (strcmp(http_mode.c_str(),"o")==0)
+		if (strcmp(http_mode.c_str(), "o") == 0)
 		{
 			if (!check_arg_num(argc, 'o'))
 			{
@@ -1191,10 +1240,10 @@ int main(int argc, char *argv[])
 #endif
 				return false;
 			}
-			Server_mode(http_mode, tcp_port,0);		
+			Server_mode(http_mode, tcp_port, 0);
 		}
 		//in thread-pool mode
-		else if(strcmp(http_mode.c_str(),"p")==0)
+		else if (strcmp(http_mode.c_str(), "p") == 0)
 		{
 			if (!check_arg_num(argc, 'p'))
 			{
